@@ -239,6 +239,8 @@ each cycle writing one more copy of each attachment.
 
 ![second measurement](evidence/06-second-measurement.png)
 
+*Second measurement, run inside the 99 GB chat folder. The home directory path is redacted.*
+
 ### 9. Are the copies byte-for-byte identical?
 
 ```zsh
