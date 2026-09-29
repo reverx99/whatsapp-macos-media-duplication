@@ -20,6 +20,7 @@ scan found the same pattern in **5 of 84** media folders.
 - 112 GB of that was WhatsApp's group container, and **99 GB came from one chat's media folder**.
 - That folder held 102,988 files, but only **24 distinct file sizes**. The same few
   attachments had been written to disk over and over, more than 10,000 times each.
+  An MD5 check confirmed it: 10,786 files of 940 bytes, **one** distinct hash.
 - Between two measurements a few minutes apart, every one of the top repeated sizes
   went up by exactly one copy. The loop was still running during the investigation.
 - It's not just one chat. [`check.sh`](check.sh) flagged **5 of 84** media folders:
@@ -58,7 +59,7 @@ For each media folder it reports:
 | `FILES`      | Number of files                                                      |
 | `UNIQ_SIZES` | Number of distinct file sizes                                        |
 | `RATIO`      | `FILES / UNIQ_SIZES`                                                 |
-| `NEW_1H`     | Files written in the last 60 minutes                                 |
+| `NEW_1H`     | Files created in the last 60 minutes (by creation time, see step 10) |
 | `FLAG`       | `SUSPICIOUS` when `FILES > 1000` **and** `RATIO >= 20`               |
 
 **Why these thresholds:** photos, voice notes and documents almost never share an exact
@@ -83,9 +84,9 @@ Output from my machine is in [step 11](#11-scanning-every-chat-with-checksh).
 | | |
 |---|---|
 | Hardware | MacBook Air (M1), 8 GB RAM, 256 GB SSD (228 Gi data volume) |
-| macOS | [TODO] |
-| WhatsApp for Mac | [TODO version / build] |
-| Install source | [TODO App Store or direct download] |
+| macOS | 27.0 (build 26A428) |
+| WhatsApp for Mac | 26.37.76 (build 1074875611) |
+| Install source | Mac App Store |
 | Shell | zsh, BSD userland |
 
 ## Investigation
@@ -239,49 +240,81 @@ find . -type f -size 940c  -exec md5 -q {} + | sort | uniq -c
 find . -type f -size 3801c -exec md5 -q {} + | sort | uniq -c
 ```
 
-[TODO: results, e.g. "10,782 files of 940 bytes → 1 distinct MD5"]
+| Size       | Files  | Distinct MD5 hashes |
+|------------|-------:|--------------------:|
+| 940 bytes  | 10,786 | **1**               |
+| 3801 bytes | 10,556 | **1**               |
+
+Every file at each size is byte-for-byte identical. These aren't different attachments
+that happen to share a size; they are the same attachment saved over and over.
 
 ### 10. How fast is it growing?
 
 ```zsh
-find . -type f -mmin -60 | wc -l      # files written in the last 60 minutes
+find . -type f -mmin -60 | wc -l      # files modified in the last 60 minutes
 find . -type f | wc -l; sleep 300; find . -type f | wc -l
 ```
 
-- Files written in the last 60 minutes: [TODO]
-- Two counts 5 minutes apart: [TODO] → [TODO]
+- Files modified in the last 60 minutes: **0**
+- Two counts 5 minutes apart: **103,076 → 103,084** (+8)
+
+This result contradicts itself, and the contradiction is informative. Eight new files
+showed up within five minutes, but neither this `-mmin -60` check nor a
+modification-time-based scan run right after it counted them as recent. The new
+copies seem to get an **old modification time**, probably the original message's
+timestamp. So mtime-based checks like `find -mmin` or Finder's "Date Modified" hide
+the growth. Creation (birth) time is the reliable signal on macOS:
+
+```zsh
+find . -type f -Bmin -60 | wc -l      # files *created* in the last 60 minutes
+```
+
+`check.sh` uses creation time for its `NEW_1H` column for this reason.
+
+At 8 files per 5 minutes, that's roughly 100 new files an hour. The rate
+isn't constant, though: this folder gained 88 files between the second measurement
+(step 8) and the first `check.sh` run.
 
 ### 11. Scanning every chat with check.sh
 
 After writing [`check.sh`](check.sh), I ran it on the whole `Media` folder
-(84 subfolders). Output, trimmed to the flagged folders plus the largest unflagged ones
-for comparison (decimal commas come from my system locale):
+(84 subfolders) with `--hash`. Output, trimmed to the flagged folders plus the largest
+unflagged ones for comparison:
 
 ```text
 FOLDER         SIZE     FILES  UNIQ_SIZES     RATIO  NEW_1H  FLAG
 ---------- -------- --------- ----------- --------- -------  ----------
-chat_1        98,8G    103076          24    4294,8       0  SUSPICIOUS
-status_1       5,0G      4136          21     197,0       0  SUSPICIOUS
-chat_2         3,4G     14118          30     470,6       0  SUSPICIOUS
-status_2       3,0G      1176           5     235,2       0  SUSPICIOUS
-chat_3       558,4M      2136        1265       1,7       8  -
-chat_4       189,8M       274         209       1,3       0  -
-group_1      123,6M       340         263       1,3       0  -
+chat_1        98.8G    103084          24    4295.2       0  SUSPICIOUS
+status_1       5.0G      4136          21     197.0       0  SUSPICIOUS
+chat_2         3.4G     14118          30     470.6       0  SUSPICIOUS
+status_2       3.0G      1176           5     235.2       0  SUSPICIOUS
+chat_3       558.4M      2136        1265       1.7       8  -
+chat_4       189.8M       274         209       1.3       0  -
+group_1      123.6M       340         263       1.3       0  -
 ...
-chat_12       27,7M     43026           2   21513,0       0  SUSPICIOUS
+chat_12       27.7M     43026           2   21513.0       0  SUSPICIOUS
 ...
 
 Folders scanned: 84 (chats 53, groups 27, status 2, other 2)
-Total size:      111,8G
-Status folders:  2, total 7,9G (statuses expire after 24h)
+Total size:      111.8G
+Status folders:  2, total 7.9G (statuses expire after 24h)
 Suspicious:      5 folder(s)
 
-chat_1: most repeated size is 940 bytes (10786 files, 10,5% of the folder)
-status_1: most repeated size is 992018 bytes (526 files, 12,7% of the folder)
-chat_2: most repeated size is 96900 bytes (1684 files, 11,9% of the folder)
-status_2: most repeated size is 6415182 bytes (340 files, 28,9% of the folder)
-chat_12: most repeated size is 692 bytes (21513 files, 50,0% of the folder)
+chat_1: most repeated size is 940 bytes (10787 files, 10.5% of the folder)
+  --hash: 10787 files of 940 bytes -> 1 distinct MD5 (byte-for-byte identical)
+status_1: most repeated size is 992018 bytes (526 files, 12.7% of the folder)
+  --hash: 526 files of 992018 bytes -> 1 distinct MD5 (byte-for-byte identical)
+chat_2: most repeated size is 96900 bytes (1684 files, 11.9% of the folder)
+  --hash: 1684 files of 96900 bytes -> 1 distinct MD5 (byte-for-byte identical)
+status_2: most repeated size is 6415182 bytes (340 files, 28.9% of the folder)
+  --hash: 340 files of 6415182 bytes -> 1 distinct MD5 (byte-for-byte identical)
+chat_12: most repeated size is 692 bytes (21513 files, 50.0% of the folder)
+  --hash: 21513 files of 692 bytes -> 1 distinct MD5 (byte-for-byte identical)
 ```
+
+This run used the earlier version of `check.sh`, where `NEW_1H` was based on
+modification time. That's why it shows 0 for `chat_1` even though the folder had just
+grown by 8 files (see step 10).
 
 What this adds:
 
@@ -292,31 +325,32 @@ What this adds:
   `du`, but it's still 43,000 pointless files.
 - **The 3.4 GB "next largest chat" from step 6 is affected too** (`chat_2`: 14,118
   files, 30 sizes).
+- **In every flagged folder, the most repeated size is one file saved over and over**
+  (`--hash` found exactly one distinct MD5 each time), from 340 copies of a 6.4 MB
+  status file to 21,513 copies of a 692-byte file.
 - **The 8 GB of statuses are the same bug**, not just slow cleanup: `status_1` has
   4,136 files with 21 sizes, and `status_2` has 1,176 files with 5 sizes.
-- **`chat_1` kept growing.** It went from 102,988 files to 103,076, and its 940-byte count from
-  10,782 to 10,786. But `NEW_1H` was 0 for every flagged folder, so nothing
-  had been written to them in the hour before this scan. The loop seems to run in bursts
-  rather than all the time.
+- **`chat_1` kept growing.** It went from 102,988 files (step 8) to 103,084, and its
+  940-byte count from 10,782 to 10,787.
 - **Healthy folders look healthy.** Every unflagged folder had a ratio between 1.0
   and 6.0, far below the threshold of 20.
-
-`check.sh --hash` results: [TODO]
 
 ## Observed behavior vs. possible cause
 
 **Observed (measured on my machine):**
 
 - One chat's media folder: 99 GB, 102,988 files, 24 unique file sizes.
-- The most common sizes repeat 7,500–10,800 times each.
+- The most common sizes repeat 7,500–10,800 times each, and the copies are identical.
 - Between two measurements a few minutes apart, the file count grew and every top
   repeated size went up by exactly one.
 - Files were still being written while WhatsApp was running.
 - Subfolders date back to 2026-07-20, so this had been building up for weeks.
 - The same pattern shows up in 5 of 84 media folders (3 chats, 2 status folders),
   so it isn't tied to one conversation.
-- In a later scan, none of the affected folders had new files in the preceding hour, so
-  the writes seem to come in bursts.
+- In every affected folder, the files at the most repeated size are byte-for-byte
+  identical (one distinct MD5 each).
+- New copies seem to get an old modification time, so mtime-based checks don't show
+  the growth (step 10).
 
 **Possible cause (hypothesis, not verified):**
 

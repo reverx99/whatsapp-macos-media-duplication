@@ -95,8 +95,10 @@ is_uint() {
 # --- platform -------------------------------------------------------------
 
 # BSD stat/md5 on macOS; GNU fallbacks only so the script can be tested on Linux.
+# NEW_1H uses the file's creation (birth) time on macOS, not its modification
+# time: new duplicates were observed with an old modification time.
 if [ "$(uname -s)" = Darwin ]; then
-	STAT_CMD=(stat -f '%z %m')
+	STAT_CMD=(stat -f '%z %B')
 	MD5_CMD=(md5 -q)
 else
 	STAT_CMD=(stat -c '%s %Y')
@@ -275,7 +277,7 @@ if [ "$flagged" -gt 0 ]; then
 		echo "Tip: run again with --hash to check whether the repeated files are identical."
 	fi
 	echo
-	echo "NEW_1H = files written in the last 60 minutes. A non-zero value on a"
+	echo "NEW_1H = files created in the last 60 minutes. A non-zero value on a"
 	echo "SUSPICIOUS folder means the duplication is still happening."
 	exit 1
 fi
