@@ -326,6 +326,21 @@ was removed and replaced by `--watch` (see step 10).
 A second run a short while later found `chat_2` at **14,136 files** (+18), with its
 96,900-byte count up from 1,684 to 1,687.
 
+A third run with `--watch 300` found no change at all:
+
+```text
+Growth over 300s (--watch):
+  chat_1        103084 ->    103084  (+0)
+  status_1        4136 ->      4136  (+0)
+  chat_2         14136 ->     14136  (+0)
+  status_2        1176 ->      1176  (+0)
+  chat_12        43026 ->     43026  (+0)
+```
+
+`chat_1` and `chat_2` also had exactly the same counts as in the previous run. So the
+duplication doesn't run all the time. It comes in bursts: +8 files in 5 minutes, then
+nothing for a while.
+
 What this adds:
 
 - **Five folders are affected, not one.** Three one-on-one chats and both status folders
@@ -353,7 +368,8 @@ What this adds:
 - The most common sizes repeat 7,500–10,800 times each, and the copies are identical.
 - Between two measurements a few minutes apart, the file count grew and every top
   repeated size went up by exactly one.
-- Files were still being written while WhatsApp was running.
+- Files were still being written while WhatsApp was running, in bursts: +8 files in
+  5 minutes at one point, then no change over a later 5-minute window.
 - Subfolders date back to 2026-07-20, so this had been building up for weeks.
 - The same pattern shows up in 5 of 84 media folders (3 chats, 2 status folders),
   so it isn't tied to one conversation.
