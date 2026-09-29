@@ -27,7 +27,7 @@ scan found the same pattern in **5 of 84** media folders.
   3 chats and both status folders. One of them holds 43,026 files with only
   **2 distinct sizes**, but takes up just 28 MB, so a disk-usage check would never catch it.
 - I can't see WhatsApp's code, so I don't claim a root cause. The pattern looks like
-  a download/retry loop that never marks the attachment as saved.
+  a loop that saves the attachment again because it never marks it as saved.
 
 ## Am I affected?
 
@@ -44,7 +44,9 @@ of tiny files and barely register (see `chat_12` below). The reliable check is t
 git clone https://github.com/reverx99/whatsapp-macos-media-duplication.git
 cd whatsapp-macos-media-duplication
 less check.sh        # read it first; it's short
-./check.sh           # add --hash to confirm the duplicates are identical
+./check.sh           # scan all media folders
+./check.sh --hash    # also check that the repeated files are identical
+./check.sh --watch 300   # also count flagged folders again after 5 minutes
 ```
 
 `check.sh` is **read-only**. It never deletes, moves or writes anything. It never prints
@@ -59,7 +61,6 @@ For each media folder it reports:
 | `FILES`      | Number of files                                                      |
 | `UNIQ_SIZES` | Number of distinct file sizes                                        |
 | `RATIO`      | `FILES / UNIQ_SIZES`                                                 |
-| `NEW_1H`     | Files created in the last 60 minutes (by creation time, see step 10) |
 | `FLAG`       | `SUSPICIOUS` when `FILES > 1000` **and** `RATIO >= 20`               |
 
 **Why these thresholds:** photos, voice notes and documents almost never share an exact
@@ -69,6 +70,11 @@ means that, on average, every distinct size shows up 20 times. That doesn't happ
 normal use. The affected chat here had a ratio of about 4,300 (102,988 / 24). The
 1,000-file minimum keeps small chats with a few repeated stickers from being flagged.
 You can change both with `MIN_FILES=... MIN_RATIO=... ./check.sh`.
+
+For flagged folders, `--hash` reports how many distinct MD5 hashes the most repeated
+size has (1 means every copy is identical), and `--watch SECONDS` counts the files
+again after a delay to show whether the folder is still growing. It counts files
+because file timestamps can't be trusted here (see step 10).
 
 Exit status: `0` nothing suspicious, `1` at least one suspicious folder, `2` usage or path error.
 
@@ -259,17 +265,17 @@ find . -type f | wc -l; sleep 300; find . -type f | wc -l
 - Two counts 5 minutes apart: **103,076 → 103,084** (+8)
 
 This result contradicts itself, and the contradiction is informative. Eight new files
-showed up within five minutes, but neither this `-mmin -60` check nor a
-modification-time-based scan run right after it counted them as recent. The new
-copies seem to get an **old modification time**, probably the original message's
-timestamp. So mtime-based checks like `find -mmin` or Finder's "Date Modified" hide
-the growth. Creation (birth) time is the reliable signal on macOS:
+showed up within five minutes, but the `-mmin -60` check didn't count any of them as
+recent. So the new copies get an **old modification time**, probably the original
+message's timestamp.
 
-```zsh
-find . -type f -Bmin -60 | wc -l      # files *created* in the last 60 minutes
-```
-
-`check.sh` uses creation time for its `NEW_1H` column for this reason.
+I then checked creation (birth) time too (`stat -f %B`, the equivalent of
+`find -Bmin -60`). It also found nothing recent, even though `chat_2` grew by 18 files
+between two runs (step 11). So **both timestamps are old** on new copies.
+Anything that sorts or filters by date, like `find -mmin`, `find -Bmin` or
+Finder's "Date Modified" and "Date Created", won't show the growth.
+The only reliable signal is counting files over time, which is what
+`check.sh --watch` does.
 
 At 8 files per 5 minutes, that's roughly 100 new files an hour. The rate
 isn't constant, though: this folder gained 88 files between the second measurement
@@ -312,9 +318,13 @@ chat_12: most repeated size is 692 bytes (21513 files, 50.0% of the folder)
   --hash: 21513 files of 692 bytes -> 1 distinct MD5 (byte-for-byte identical)
 ```
 
-This run used the earlier version of `check.sh`, where `NEW_1H` was based on
-modification time. That's why it shows 0 for `chat_1` even though the folder had just
-grown by 8 files (see step 10).
+This run used an early version of `check.sh` with a `NEW_1H` column (files modified
+in the last hour). It showed 0 for `chat_1` even though the folder had just grown by
+8 files. A later version based on creation time also showed 0 everywhere. The column
+was removed and replaced by `--watch` (see step 10).
+
+A second run a short while later found `chat_2` at **14,136 files** (+18), with its
+96,900-byte count up from 1,684 to 1,687.
 
 What this adds:
 
@@ -323,8 +333,8 @@ What this adds:
 - **`chat_12` is extreme in a different way:** 43,026 files with only **2 distinct
   sizes** (21,513 of each, a pair again), but only 27.7 MB on disk. It's invisible to
   `du`, but it's still 43,000 pointless files.
-- **The 3.4 GB "next largest chat" from step 6 is affected too** (`chat_2`: 14,118
-  files, 30 sizes).
+- **The 3.4 GB "next largest chat" from step 6 is affected too, and still growing**
+  (`chat_2`: 14,118 → 14,136 files, 30 sizes).
 - **In every flagged folder, the most repeated size is one file saved over and over**
   (`--hash` found exactly one distinct MD5 each time), from 340 copies of a 6.4 MB
   status file to 21,513 copies of a 692-byte file.
@@ -349,8 +359,8 @@ What this adds:
   so it isn't tied to one conversation.
 - In every affected folder, the files at the most repeated size are byte-for-byte
   identical (one distinct MD5 each).
-- New copies seem to get an old modification time, so mtime-based checks don't show
-  the growth (step 10).
+- New copies carry old modification *and* creation times, so date-based checks
+  don't show the growth (step 10).
 
 **Possible cause (hypothesis, not verified):**
 
@@ -360,6 +370,16 @@ never records it as downloaded. On the next pass (sync, relaunch or a periodic r
 the app thinks the media is still missing and downloads it again. Other explanations
 are possible, such as a sync or migration job that keeps re-importing the same messages.
 Only WhatsApp can confirm the cause.
+
+One clue narrows it a little: new copies arrive with **old** creation and modification
+times. A fresh network download would normally get the current time. Copying an
+existing file with its metadata preserved keeps the old dates, so the duplicates may come
+from a local copy or re-import step rather than a real re-download. That's still a guess.
+
+Open question: if those copies are APFS clones, they could share storage on disk, and
+`du` would overstate how much space they really take. The disk being 93% full suggests
+most of it is real. Comparing `df -h` before and after deleting the container (see
+[Workaround](#workaround)) would settle it.
 
 ## Impact
 
@@ -390,6 +410,8 @@ Only WhatsApp can confirm the cause.
    ```
    (In Finder: <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd>, paste
    `~/Library/Group Containers`, then drag the folder to the Trash and empty it.)
+   Run `df -h /System/Volumes/Data` before and after to see how much space you
+   actually got back.
 4. **Turn off media auto-download** in Settings > Storage and Data: on the phone now,
    and on the Mac as soon as it's linked again, before you open the affected chat.
 5. **Re-link** the Mac by scanning the QR code.

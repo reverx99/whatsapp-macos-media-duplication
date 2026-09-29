@@ -13,7 +13,7 @@
 #     Folders are labelled chat_N, group_N, status_N or other_N instead, so the
 #     report is safe to paste publicly.
 #
-# Usage: ./check.sh [--hash] [MEDIA_DIR]
+# Usage: ./check.sh [--hash] [--watch SECONDS] [MEDIA_DIR]
 #        ./check.sh --help
 #
 # Written for the bash 3.2 and BSD userland that ship with macOS.
@@ -35,7 +35,7 @@ TAB=$(printf '\t')
 
 usage() {
 	cat <<EOF
-Usage: ./check.sh [--hash] [MEDIA_DIR]
+Usage: ./check.sh [--hash] [--watch SECONDS] [MEDIA_DIR]
 
 Read-only check for the WhatsApp for Mac media-duplication bug.
 
@@ -47,6 +47,9 @@ Options:
   --hash      For SUSPICIOUS folders, MD5 every file at the most repeated
               size and report how many distinct hashes there are
               (1 distinct hash = the files are byte-for-byte identical).
+  --watch SECONDS
+              For SUSPICIOUS folders, count files, wait SECONDS, count again
+              and report the difference (is the duplication still running?).
   -h, --help  Show this help.
 
 Environment:
@@ -95,23 +98,27 @@ is_uint() {
 # --- platform -------------------------------------------------------------
 
 # BSD stat/md5 on macOS; GNU fallbacks only so the script can be tested on Linux.
-# NEW_1H uses the file's creation (birth) time on macOS, not its modification
-# time: new duplicates were observed with an old modification time.
 if [ "$(uname -s)" = Darwin ]; then
-	STAT_CMD=(stat -f '%z %B')
+	STAT_CMD=(stat -f %z)
 	MD5_CMD=(md5 -q)
 else
-	STAT_CMD=(stat -c '%s %Y')
+	STAT_CMD=(stat -c %s)
 	MD5_CMD=(md5sum)
 fi
 
 # --- arguments ------------------------------------------------------------
 
 DO_HASH=0
+WATCH=0
 MEDIA_DIR=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--hash) DO_HASH=1 ;;
+		--watch)
+			{ [ $# -ge 2 ] && is_uint "$2"; } || die "--watch needs a number of seconds (see --help)"
+			WATCH=$2
+			shift
+			;;
 		-h | --help)
 			usage
 			exit 0
@@ -157,12 +164,11 @@ fi
 
 # --- scan -----------------------------------------------------------------
 
-NOW=$(date +%s)
 SHOW_PROGRESS=0
 [ -t 2 ] && SHOW_PROGRESS=1
 
 # One row per folder, kept in memory only:
-# bytes, files, unique sizes, ratio, top size, top-size count, new in 1h, kind, path
+# bytes, files, unique sizes, ratio, top size, top-size count, kind, path
 rows=""
 scanned=0
 
@@ -179,8 +185,8 @@ while IFS= read -r -d '' dir; do
 	[ "$SHOW_PROGRESS" -eq 1 ] && printf '\rScanning folder %d...' "$scanned" >&2
 
 	stats=$(find "$dir" -type f -exec "${STAT_CMD[@]}" {} + 2>/dev/null |
-		awk -v now="$NOW" '
-			{ n++; t += $1; c[$1]++; if (now - $2 <= 3600) r++ }
+		awk '
+			{ n++; t += $1; c[$1]++ }
 			END {
 				u = 0; mc = 0; ms = 0
 				for (s in c) {
@@ -188,7 +194,7 @@ while IFS= read -r -d '' dir; do
 					if (c[s] > mc || (c[s] == mc && s + 0 > ms + 0)) { mc = c[s]; ms = s }
 				}
 				ratio = (u > 0) ? n / u : 0
-				printf "%.0f\t%d\t%d\t%.1f\t%d\t%d\t%d\n", t, n + 0, u, ratio, ms, mc, r + 0
+				printf "%.0f\t%d\t%d\t%.1f\t%d\t%d\n", t, n + 0, u, ratio, ms, mc
 			}')
 	rows="${rows}${stats}${TAB}${kind}${TAB}${dir}
 "
@@ -212,13 +218,14 @@ fi
 n_chat=0 n_group=0 n_status=0 n_other=0
 total_bytes=0 status_bytes=0 flagged=0
 details=""
+flagged_dirs=""
 
-printf '%-10s %8s %9s %11s %9s %7s  %s\n' \
-	FOLDER SIZE FILES UNIQ_SIZES RATIO NEW_1H FLAG
-printf '%-10s %8s %9s %11s %9s %7s  %s\n' \
-	---------- -------- --------- ----------- --------- ------- ----------
+printf '%-10s %8s %9s %11s %9s  %s\n' \
+	FOLDER SIZE FILES UNIQ_SIZES RATIO FLAG
+printf '%-10s %8s %9s %11s %9s  %s\n' \
+	---------- -------- --------- ----------- --------- ----------
 
-while IFS="$TAB" read -r bytes files uniq ratio top_size top_count new1h kind dir; do
+while IFS="$TAB" read -r bytes files uniq ratio top_size top_count kind dir; do
 	[ -n "$bytes" ] || continue
 	case "$kind" in
 		chat) n_chat=$((n_chat + 1)); label="chat_$n_chat" ;;
@@ -236,6 +243,8 @@ while IFS="$TAB" read -r bytes files uniq ratio top_size top_count new1h kind di
 	if [ "$files" -gt "$MIN_FILES" ] && [ "$files" -ge $((MIN_RATIO * uniq)) ]; then
 		flag="SUSPICIOUS"
 		flagged=$((flagged + 1))
+		flagged_dirs="${flagged_dirs}${label}${TAB}${dir}
+"
 		share=$(awk -v a="$top_count" -v b="$files" 'BEGIN { printf "%.1f", 100 * a / b }')
 		details="${details}${label}: most repeated size is $top_size bytes ($top_count files, $share% of the folder)
 "
@@ -256,8 +265,8 @@ while IFS="$TAB" read -r bytes files uniq ratio top_size top_count new1h kind di
 		fi
 	fi
 
-	printf '%-10s %8s %9d %11d %9s %7d  %s\n' \
-		"$label" "$(human "$bytes")" "$files" "$uniq" "$ratio" "$new1h" "$flag"
+	printf '%-10s %8s %9d %11d %9s  %s\n' \
+		"$label" "$(human "$bytes")" "$files" "$uniq" "$ratio" "$flag"
 done < <(printf '%s' "$rows" | sort -t "$TAB" -k1,1nr)
 
 echo
@@ -273,12 +282,36 @@ echo "Suspicious:      $flagged folder(s)"
 if [ "$flagged" -gt 0 ]; then
 	echo
 	printf '%s' "$details"
-	if [ "$DO_HASH" -eq 0 ]; then
-		echo "Tip: run again with --hash to check whether the repeated files are identical."
+
+	if [ "$WATCH" -gt 0 ]; then
+		# File timestamps can't be trusted here (new duplicates were observed
+		# with old creation and modification times), so count files instead.
+		echo
+		echo "Growth over ${WATCH}s (--watch):"
+		before=""
+		while IFS="$TAB" read -r label dir; do
+			[ -n "$label" ] || continue
+			before="${before}$(find "$dir" -type f 2>/dev/null | wc -l | tr -d ' ')
+"
+		done < <(printf '%s' "$flagged_dirs")
+		[ "$SHOW_PROGRESS" -eq 1 ] && printf 'Waiting %ss...' "$WATCH" >&2
+		sleep "$WATCH"
+		[ "$SHOW_PROGRESS" -eq 1 ] && printf '\r%40s\r' '' >&2
+		i=0
+		while IFS="$TAB" read -r label dir; do
+			[ -n "$label" ] || continue
+			i=$((i + 1))
+			n0=$(printf '%s' "$before" | sed -n "${i}p")
+			n1=$(find "$dir" -type f 2>/dev/null | wc -l | tr -d ' ')
+			printf '  %-10s %9d -> %9d  (%+d)\n' "$label" "$n0" "$n1" $((n1 - n0))
+		done < <(printf '%s' "$flagged_dirs")
 	fi
+
 	echo
-	echo "NEW_1H = files created in the last 60 minutes. A non-zero value on a"
-	echo "SUSPICIOUS folder means the duplication is still happening."
+	[ "$DO_HASH" -eq 0 ] &&
+		echo "Tip: --hash checks whether the repeated files are identical."
+	[ "$WATCH" -eq 0 ] &&
+		echo "Tip: --watch 300 checks whether flagged folders are still growing."
 	exit 1
 fi
 
