@@ -1,7 +1,8 @@
 # WhatsApp for Mac re-downloads the same media tens of thousands of times
 
 A single one-on-one chat grew to **99 GB** on disk: **102,988 files**, but only
-**24 unique file sizes**. The count kept going up while I was measuring it.
+**24 unique file sizes**. The count kept going up while I was measuring it. A later
+scan found the same pattern in **5 of 84** media folders.
 
 - [TL;DR](#tldr)
 - [Am I affected?](#am-i-affected)
@@ -21,18 +22,22 @@ A single one-on-one chat grew to **99 GB** on disk: **102,988 files**, but only
   attachments had been written to disk over and over, more than 10,000 times each.
 - Between two measurements a few minutes apart, every one of the top repeated sizes
   went up by exactly one copy. The loop was still running during the investigation.
+- It's not just one chat. [`check.sh`](check.sh) flagged **5 of 84** media folders:
+  3 chats and both status folders. One of them holds 43,026 files with only
+  **2 distinct sizes**, but takes up just 28 MB, so a disk-usage check would never catch it.
 - I can't see WhatsApp's code, so I don't claim a root cause. The pattern looks like
   a download/retry loop that never marks the attachment as saved.
 
 ## Am I affected?
 
-Check how big WhatsApp's media folder is:
+Quick look at how big WhatsApp's media folder is:
 
 ```zsh
 du -sh ~/Library/Group\ Containers/group.net.whatsapp.WhatsApp.shared/Message/Media
 ```
 
-If that's much bigger than you'd expect, run the detector:
+A small number doesn't mean you're safe: an affected folder can hold tens of thousands
+of tiny files and barely register (see `chat_12` below). The reliable check is the detector:
 
 ```zsh
 git clone https://github.com/reverx99/whatsapp-macos-media-duplication.git
@@ -57,7 +62,8 @@ For each media folder it reports:
 | `FLAG`       | `SUSPICIOUS` when `FILES > 1000` **and** `RATIO >= 20`               |
 
 **Why these thresholds:** photos, voice notes and documents almost never share an exact
-byte size, so a healthy chat has a ratio close to 1 (usually below 2). A ratio of 20
+byte size, so a healthy chat has a ratio close to 1. On my machine, all 79 unflagged
+folders were between 1.0 and 6.0, and the flagged ones between 197 and 21,513. A ratio of 20
 means that, on average, every distinct size shows up 20 times. That doesn't happen in
 normal use. The affected chat here had a ratio of about 4,300 (102,988 / 24). The
 1,000-file minimum keeps small chats with a few repeated stickers from being flagged.
@@ -70,11 +76,7 @@ Exit status: `0` nothing suspicious, `1` at least one suspicious folder, `2` usa
 > *Operation not permitted*. Allow the prompt, or give your terminal Full Disk Access in
 > System Settings > Privacy & Security.
 
-Output from my machine:
-
-```text
-[TODO: paste the output of ./check.sh --hash here]
-```
+Output from my machine is in [step 11](#11-scanning-every-chat-with-checksh).
 
 ## Environment
 
@@ -249,6 +251,58 @@ find . -type f | wc -l; sleep 300; find . -type f | wc -l
 - Files written in the last 60 minutes: [TODO]
 - Two counts 5 minutes apart: [TODO] → [TODO]
 
+### 11. Scanning every chat with check.sh
+
+After writing [`check.sh`](check.sh), I ran it on the whole `Media` folder
+(84 subfolders). Output, trimmed to the flagged folders plus the largest unflagged ones
+for comparison (decimal commas come from my system locale):
+
+```text
+FOLDER         SIZE     FILES  UNIQ_SIZES     RATIO  NEW_1H  FLAG
+---------- -------- --------- ----------- --------- -------  ----------
+chat_1        98,8G    103076          24    4294,8       0  SUSPICIOUS
+status_1       5,0G      4136          21     197,0       0  SUSPICIOUS
+chat_2         3,4G     14118          30     470,6       0  SUSPICIOUS
+status_2       3,0G      1176           5     235,2       0  SUSPICIOUS
+chat_3       558,4M      2136        1265       1,7       8  -
+chat_4       189,8M       274         209       1,3       0  -
+group_1      123,6M       340         263       1,3       0  -
+...
+chat_12       27,7M     43026           2   21513,0       0  SUSPICIOUS
+...
+
+Folders scanned: 84 (chats 53, groups 27, status 2, other 2)
+Total size:      111,8G
+Status folders:  2, total 7,9G (statuses expire after 24h)
+Suspicious:      5 folder(s)
+
+chat_1: most repeated size is 940 bytes (10786 files, 10,5% of the folder)
+status_1: most repeated size is 992018 bytes (526 files, 12,7% of the folder)
+chat_2: most repeated size is 96900 bytes (1684 files, 11,9% of the folder)
+status_2: most repeated size is 6415182 bytes (340 files, 28,9% of the folder)
+chat_12: most repeated size is 692 bytes (21513 files, 50,0% of the folder)
+```
+
+What this adds:
+
+- **Five folders are affected, not one.** Three one-on-one chats and both status folders
+  show the same pattern: thousands of files, a handful of sizes. No group was flagged.
+- **`chat_12` is extreme in a different way:** 43,026 files with only **2 distinct
+  sizes** (21,513 of each, a pair again), but only 27.7 MB on disk. It's invisible to
+  `du`, but it's still 43,000 pointless files.
+- **The 3.4 GB "next largest chat" from step 6 is affected too** (`chat_2`: 14,118
+  files, 30 sizes).
+- **The 8 GB of statuses are the same bug**, not just slow cleanup: `status_1` has
+  4,136 files with 21 sizes, and `status_2` has 1,176 files with 5 sizes.
+- **`chat_1` kept growing.** It went from 102,988 files to 103,076, and its 940-byte count from
+  10,782 to 10,786. But `NEW_1H` was 0 for every flagged folder, so nothing
+  had been written to them in the hour before this scan. The loop seems to run in bursts
+  rather than all the time.
+- **Healthy folders look healthy.** Every unflagged folder had a ratio between 1.0
+  and 6.0, far below the threshold of 20.
+
+`check.sh --hash` results: [TODO]
+
 ## Observed behavior vs. possible cause
 
 **Observed (measured on my machine):**
@@ -259,6 +313,10 @@ find . -type f | wc -l; sleep 300; find . -type f | wc -l
   repeated size went up by exactly one.
 - Files were still being written while WhatsApp was running.
 - Subfolders date back to 2026-07-20, so this had been building up for weeks.
+- The same pattern shows up in 5 of 84 media folders (3 chats, 2 status folders),
+  so it isn't tied to one conversation.
+- In a later scan, none of the affected folders had new files in the preceding hour, so
+  the writes seem to come in bursts.
 
 **Possible cause (hypothesis, not verified):**
 
@@ -271,7 +329,8 @@ Only WhatsApp can confirm the cause.
 
 ## Impact
 
-- **Disk exhaustion:** 99 GB from one chat, on a 256 GB machine. Left alone, it keeps
+- **Disk exhaustion:** 99 GB from one chat (about 110 GB across all affected folders),
+  on a 256 GB machine. Left alone, it keeps
   growing until the disk is full.
 - **Swap pressure:** with little free space, macOS struggles to manage swap. That made
   an 8 GB machine feel much slower than its memory pressure suggested.

@@ -20,6 +20,9 @@
 
 set -u
 
+# Fixed locale: '.' as decimal separator and byte-wise sorting on every system.
+export LC_ALL=C
+
 DEFAULT_DIR="$HOME/Library/Group Containers/group.net.whatsapp.WhatsApp.shared/Message/Media"
 
 # Detection thresholds (overridable through the environment).
